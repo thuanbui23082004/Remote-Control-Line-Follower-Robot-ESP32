@@ -19,11 +19,12 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <HTTPClient.h>
-const char* AI_SERVER = "http://192.168.4.2:5000/detect"; // IP máy tính
+const char* AI_SERVER = "http://192.168.4.3:5000/detect"; // IP máy tính
 
 String lastTrafficLight = "NONE";
 unsigned long lastAICheck = 0;
 const unsigned long AI_INTERVAL = 800; // ms — kiểm tra mỗi 0.8 giây
+int lastAICode = 0;
 
 // ----------------------------------------------------------------
 //  CAMERA PIN (AI-Thinker ESP32-CAM)
@@ -64,10 +65,7 @@ const char* password = "12345678";
 //  WEB SERVER & WEBSOCKET
 // ----------------------------------------------------------------
 AsyncWebServer server(80);
-AsyncWebSocket  wsCamera("/Camera");
 AsyncWebSocket  wsControl("/Control");
-
-uint32_t cameraClientId = 0;
 
 void checkTrafficLight() {
   if (millis() - lastAICheck < AI_INTERVAL) return;
@@ -77,23 +75,9 @@ void checkTrafficLight() {
 
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("CAM FAIL");
+    lastAICode = -1001; // camera frame fail
     return;
   }
-
-  Serial.printf("IMG: %d\n", fb->len);
-
-  size_t jpgLen = fb->len;
-  uint8_t* jpgBuf = (uint8_t*)malloc(jpgLen);
-
-  if (!jpgBuf) {
-    Serial.println("MALLOC FAIL");
-    esp_camera_fb_return(fb);
-    return;
-  }
-
-  memcpy(jpgBuf, fb->buf, jpgLen);
-  esp_camera_fb_return(fb);
 
   HTTPClient http;
 
@@ -101,24 +85,31 @@ void checkTrafficLight() {
 
   http.begin(AI_SERVER);
   http.addHeader("Content-Type", "image/jpeg");
-  http.setTimeout(1000);
+  http.setConnectTimeout(1500);
+  http.setTimeout(4000);
 
   Serial.println("POSTING...");
 
-  int code = http.POST(jpgBuf, jpgLen);
+  int code = http.POST(fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  lastAICode = code;
 
   Serial.printf("HTTP CODE: %d\n", code);
 
-  free(jpgBuf);
+  {
+    char aiBuf[24];
+    snprintf(aiBuf, sizeof(aiBuf), "{\"ai\":%d}", lastAICode);
+    wsControl.textAll(aiBuf);
+  }
 
   if (code == 200) {
     String body = http.getString();
 
     Serial.println(body);
 
-    if (body.indexOf("RED") > 0)
+    if (body.indexOf("RED") >= 0)
       lastTrafficLight = "RED";
-    else if (body.indexOf("GREEN") > 0)
+    else if (body.indexOf("GREEN") >= 0)
       lastTrafficLight = "GREEN";
     else
       lastTrafficLight = "NONE";
@@ -426,24 +417,23 @@ const char* htmlPage PROGMEM = R"HTML(
 
   <header>
     <h1>◼ ROVER CONTROL</h1>
-    <p>LINE FOLLOWER · OBSTACLE AVOIDANCE · LIVE CAM</p>
+    <p>LINE FOLLOWER · OBSTACLE AVOIDANCE</p>
   </header>
 
   <!-- Connection status -->
   <div class="conn-bar">
-    <div class="conn-item"><div class="conn-dot" id="dotCam"></div>CAMERA</div>
     <div class="conn-item"><div class="conn-dot" id="dotCtrl"></div>CONTROL</div>
     <div class="conn-item"><div class="conn-dot" id="dotNano"></div>ESP32</div>
   </div>
 
   <!-- Camera feed -->
   <div class="cam-box">
-    <img id="camImg" src="" alt="stream">
+    <img id="camImg" src="" alt="camera-disabled">
     <div class="cam-corner tl"></div>
     <div class="cam-corner br"></div>
     <div class="cam-badge">
       <div class="dot" id="camDot"></div>
-      <span id="camTxt">CONNECTING</span>
+      <span id="camTxt">DISABLED</span>
     </div>
   </div>
 
@@ -470,6 +460,10 @@ const char* htmlPage PROGMEM = R"HTML(
     <div class="st">
       <span class="st-l">MODE</span>
       <span class="st-v ok" id="svMode">MANUAL</span>
+    </div>
+    <div class="st">
+      <span class="st-l">AI</span>
+      <span class="st-v" id="svAI">---</span>
     </div>
   </div>
 
@@ -537,23 +531,8 @@ const char* htmlPage PROGMEM = R"HTML(
 
 <script>
 // ── WebSocket ──────────────────────────────────────────────
-var wsCam, wsCtrl;
+var wsCtrl;
 var isAuto = false;
-
-function initCamWS() {
-  wsCam = new WebSocket("ws://" + location.hostname + "/Camera");
-  wsCam.binaryType = 'blob';
-  wsCam.onopen = () => {
-    dotOn('dotCam'); dotOn('camDot', 'camTxt', 'LIVE');
-  };
-  wsCam.onclose = () => {
-    dotOff('dotCam'); dotOff('camDot', 'camTxt', 'OFFLINE');
-    setTimeout(initCamWS, 2000);
-  };
-  wsCam.onmessage = e => {
-    document.getElementById('camImg').src = URL.createObjectURL(e.data);
-  };
-}
 
 function initCtrlWS() {
   wsCtrl = new WebSocket("ws://" + location.hostname + "/Control");
@@ -580,6 +559,7 @@ function initCtrlWS() {
       if (d.nano !== undefined) {
         d.nano ? dotOn('dotNano') : dotOff('dotNano');
       }
+      if (d.ai !== undefined) setAI(d.ai);
     } catch(e) {}
   };
 }
@@ -616,6 +596,14 @@ function setIR(id, val) {
   el.className = 'ir-led' + (val ? ' black' : '');
 }
 
+function setAI(code) {
+  var el = document.getElementById('svAI');
+  el.textContent = code;
+  if (code === 200) el.className = 'st-v ok';
+  else if (code > 0) el.className = 'st-v warn';
+  else el.className = 'st-v danger';
+}
+
 function dotOn(id, txtId, txt) {
   document.getElementById(id).classList.add('on');
   if (txtId) document.getElementById(txtId).textContent = txt;
@@ -625,7 +613,7 @@ function dotOff(id, txtId, txt) {
   if (txtId) document.getElementById(txtId).textContent = txt;
 }
 
-window.onload = () => { initCamWS(); initCtrlWS(); };
+window.onload = () => { initCtrlWS(); };
 </script>
 </body>
 </html>
@@ -666,20 +654,14 @@ bool setupCamera() {
 // ================================================================
 //  WEBSOCKET HANDLERS
 // ================================================================
-void onCameraWS(AsyncWebSocket*, AsyncWebSocketClient* client,
-                AwsEventType type, void*, uint8_t*, size_t) {
-  if (type == WS_EVT_CONNECT)    cameraClientId = client->id();
-  else if (type == WS_EVT_DISCONNECT) cameraClientId = 0;
-}
-
 void onControlWS(AsyncWebSocket*, AsyncWebSocketClient* client,
                  AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     // Gửi trạng thái hiện tại ngay khi kết nối
     char buf[80];
     snprintf(buf, sizeof(buf),
-      "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1}",
-      distF, distL, distR, irLeft, irRight);
+      "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d}",
+      distF, distL, distR, irLeft, irRight, lastAICode);
     client->text(buf);
     return;
   }
@@ -706,23 +688,6 @@ void onControlWS(AsyncWebSocket*, AsyncWebSocketClient* client,
     // Format: "CMD,<key>,<value>\n"
     Serial.println("CMD," + key + "," + val);
   }
-}
-
-// ================================================================
-//  SEND CAMERA FRAME
-// ================================================================
-void sendCameraFrame() {
-  if (cameraClientId == 0) return;
-
-  camera_fb_t* fb = esp_camera_fb_get();
-  if (!fb) return;
-
-  AsyncWebSocketClient* cl = wsCamera.client(cameraClientId);
-  if (cl && !cl->queueIsFull()) {
-    wsCamera.binary(cameraClientId, fb->buf, fb->len);
-  }
-  // Nếu queue đầy thì BỎ QUA frame này, không chờ
-  esp_camera_fb_return(fb);
 }
 
 // ================================================================
@@ -756,8 +721,8 @@ void readFromESP32() {
         // Đẩy telemetry lên tất cả web client
         char buf[80];
         snprintf(buf, sizeof(buf),
-          "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1}",
-          distF, distL, distR, (int)irLeft, (int)irRight);
+          "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d}",
+          distF, distL, distR, (int)irLeft, (int)irRight, lastAICode);
         wsControl.textAll(buf);
       }
       esp32Buffer = "";
@@ -786,20 +751,17 @@ void setup() {
     req->send(404, "text/plain", "Not Found");
   });
 
-  wsCamera.onEvent(onCameraWS);
-  server.addHandler(&wsCamera);
-
   wsControl.onEvent(onControlWS);
   server.addHandler(&wsControl);
 
   server.begin();
-  setupCamera();
+  if (!setupCamera()) {
+    lastAICode = -1002; // camera init fail
+  }
 }
 
 void loop() {
   readFromESP32();           // Nhận telemetry từ Nano
-  wsCamera.cleanupClients();
   wsControl.cleanupClients();
-  sendCameraFrame();        // Stream camera
   checkTrafficLight(); 
 }
