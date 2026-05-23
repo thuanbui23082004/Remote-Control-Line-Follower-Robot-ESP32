@@ -19,11 +19,11 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <HTTPClient.h>
-const char* AI_SERVER = "http://192.168.4.3:5000/detect"; // IP máy tính
+const char* AI_SERVER = "http://192.168.4.4:5000/detect"; // IP máy tính
 
 String lastTrafficLight = "NONE";
 unsigned long lastAICheck = 0;
-const unsigned long AI_INTERVAL = 800; // ms — kiểm tra mỗi 0.8 giây
+const unsigned long AI_INTERVAL = 500; // ms — kiểm tra mỗi 0.5 giây
 int lastAICode = 0;
 
 // ----------------------------------------------------------------
@@ -45,7 +45,7 @@ int lastAICode = 0;
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-
+#define FLASH_PIN 4  // Flash LED của ESP32-CAM AI-Thinker
 // ----------------------------------------------------------------
 //  UART GIAO TIẾP VỚI ESP32 SLAVE
 //  GPIO1=TX, GPIO3=RX — dùng Serial (UART0)
@@ -683,7 +683,12 @@ void onControlWS(AsyncWebSocket*, AsyncWebSocketClient* client,
     if (comma < 0) return;
     String key = msg.substring(0, comma);
     String val = msg.substring(comma + 1);
-
+    if (key == "Light") {
+      // Xử lý ngay tại ESP32-CAM, không forward xuống Slave
+      int brightness = val.toInt();
+      ledcWrite(2, brightness);
+      return; // <-- không Serial.println xuống Slave
+    }
     // Chuyển tiếp xuống ESP32 qua Serial
     // Format: "CMD,<key>,<value>\n"
     Serial.println("CMD," + key + "," + val);
@@ -750,7 +755,9 @@ void setup() {
   server.onNotFound([](AsyncWebServerRequest* req){
     req->send(404, "text/plain", "Not Found");
   });
-
+  ledcSetup(2, 5000, 8);        // channel 2, 5kHz, 8-bit
+  ledcAttachPin(FLASH_PIN, 2);
+  ledcWrite(2, 0);
   wsControl.onEvent(onControlWS);
   server.addHandler(&wsControl);
 
