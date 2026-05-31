@@ -19,8 +19,6 @@ print("[STARTUP] Loading YOLO model...")
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     model = YOLO("yolo11n.pt")
-    # Hoặc:
-    # model = YOLO("weights/best.pt")
 
 # Warmup
 dummy = np.zeros((320, 320, 3), dtype=np.uint8)
@@ -31,9 +29,9 @@ print("[STARTUP] Model ready!")
 # =========================================================
 # CONFIG
 # =========================================================
-CONFIDENCE_THRESHOLD = 0.25   # Ngưỡng thấp để YOLO bắt được vật (đã tăng từ 0.15 lên 0.25 để giảm rác)
-MIN_CONFIDENCE_TO_SEND = 0.20 # [MỚI] Ngưỡng tin cậy gửi dữ liệu: Phải >= 20% mới xử lý màu
-TRAFFIC_LIGHT_CLASS_ID = 9    # [MỚI] Chỉ số Class của Đèn giao thông trong dataset COCO
+CONFIDENCE_THRESHOLD = 0.25   
+MIN_CONFIDENCE_TO_SEND = 0.20 
+TRAFFIC_LIGHT_CLASS_ID = 9   
 
 ENHANCE_FRAME = True
 UPSCALE_FRAME = True
@@ -73,17 +71,27 @@ def classify_light_color(roi):
     # Xanh lá
     green_mask = cv2.inRange(
         hsv,
-        np.array([35, 60, 60]),
-        np.array([90, 255, 255])
+        np.array([30, 35, 40]),
+        np.array([95, 255, 255])
     )
+
+    # Dải xanh phụ (nhạy với đèn mờ/xa) và ánh sáng yếu
+    green_mask_2 = cv2.inRange(
+        hsv,
+        np.array([20, 20, 20]),
+        np.array([85, 200, 200])
+    )
+
+    # Gộp hai dải xanh
+    green_mask = cv2.bitwise_or(green_mask, green_mask_2)
 
     red_score = cv2.countNonZero(red_mask)
     green_score = cv2.countNonZero(green_mask)
 
-    if red_score > green_score and red_score > 25:
+    if red_score > green_score and red_score > 20:
         return "RED"
 
-    if green_score > red_score and green_score > 25:
+    if green_score > red_score and green_score > 15:
         return "GREEN"
 
     return "NONE"
@@ -188,13 +196,13 @@ def detect():
                 img_detect,
                 verbose=False,
                 conf=CONFIDENCE_THRESHOLD,
-                iou=IOU_THRESHOLD
+                iou=0.45
             )
 
             result = results[0]
 
             if result.boxes is None or len(result.boxes) == 0:
-                final_result = {"light": "NONE"}
+                final_result = {"light": "GREEN"}
             else:
                 boxes = result.boxes
                 valid_lights = []
@@ -211,9 +219,9 @@ def detect():
                             "xyxy": boxes.xyxy[i]
                         })
 
-                # Nếu không có đèn giao thông nào đủ điều kiện -> Trả về NONE
+                # Nếu không có đèn giao thông nào đủ điều kiện -> Trả về GREEN
                 if len(valid_lights) == 0:
-                    final_result = {"light": "NONE"}
+                    final_result = {"light": "GREEN"}
                 else:
                     # Nếu có nhiều đèn thỏa mãn, chọn box có độ tin cậy (confidence) cao nhất
                     valid_lights.sort(key=lambda x: x["conf"], reverse=True)
