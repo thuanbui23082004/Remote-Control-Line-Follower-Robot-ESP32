@@ -134,8 +134,8 @@ def classify_light_color(roi: np.ndarray) -> str:
     )
 
     # ── XANH LÁ ─────────────────────────────────────────
-    green_lo = np.array([35, 40, 40])
-    green_hi = np.array([95, 255, 255])
+    green_lo = np.array([30, 15, 120])   # S thấp hơn, V cao (vì đang chói sáng)
+    green_hi = np.array([100, 255, 255])
     green_mask = cv2.inRange(hsv, green_lo, green_hi)
 
     # ── VÀNG (bổ sung để không nhầm đỏ/xanh) ───────────

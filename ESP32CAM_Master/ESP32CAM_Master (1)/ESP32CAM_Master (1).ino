@@ -19,7 +19,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <HTTPClient.h>
-const char* AI_SERVER = "http://192.168.4.4:5000/detect"; // IP máy tính
+const char* AI_SERVER = "http://192.168.4.2:5000/detect"; // IP máy tính
 
 String lastTrafficLight = "NONE";
 unsigned long lastAICheck = 0;
@@ -210,37 +210,58 @@ const char* htmlPage PROGMEM = R"HTML(
     }
     header p { font-size: 9px; color: var(--dim); letter-spacing: 3px; margin-top: 3px; }
 
-    /* ── CAMERA ── */
-    .cam-box {
-      position: relative;
-      background: #040810;
+    /* ── LINE STATUS LIGHTS ── */
+    .line-panel {
+      background: linear-gradient(135deg, rgba(13,21,32,.98), rgba(6,12,20,.98));
       border: 1px solid var(--border);
       border-radius: 10px;
-      overflow: hidden;
+      padding: 12px 14px;
       margin-bottom: 10px;
     }
-    .cam-box img {
-      width: 100%; height: 210px;
-      object-fit: cover; display: block;
+    .line-head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+      font-size: 9px; letter-spacing: 2px;
+      color: var(--dim);
     }
-    .cam-corner {
-      position: absolute;
-      width: 14px; height: 14px;
-      border-color: var(--accent); border-style: solid;
+    .line-state {
+      color: var(--accent);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px; font-weight: 700;
     }
-    .cam-corner.tl { top:6px; left:6px;  border-width: 2px 0 0 2px; }
-    .cam-corner.br { bottom:6px; right:6px; border-width: 0 2px 2px 0; }
-    .cam-badge {
-      position: absolute; top: 8px; right: 10px;
-      display: flex; align-items: center; gap: 5px;
-      font-size: 9px; letter-spacing: 1px;
+    .lamp-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
     }
-    .dot {
-      width: 7px; height: 7px; border-radius: 50%;
+    .lamp-card {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      background: rgba(4,8,16,.7);
+      border: 1px solid rgba(26,48,80,.85);
+      border-radius: 8px;
+      padding: 12px 8px 10px;
+    }
+    .lamp {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: var(--dim);
+      box-shadow: inset 0 0 14px rgba(0,0,0,.8);
+      transition: all .18s;
+    }
+    .lamp.red.on {
       background: var(--red);
+      box-shadow: 0 0 20px rgba(255,34,68,.65), inset 0 0 10px rgba(255,255,255,.18);
     }
-    .dot.on { background: var(--green); animation: pulse 1.4s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .lamp.green.on {
+      background: var(--green);
+      box-shadow: 0 0 20px rgba(0,255,136,.65), inset 0 0 10px rgba(255,255,255,.18);
+    }
+    .lamp-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 2px;
+    }
+    .lamp-label.red { color: var(--red); }
+    .lamp-label.green { color: var(--green); }
 
     /* ── MODE BUTTONS ── */
     .mode-row { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -271,7 +292,7 @@ const char* htmlPage PROGMEM = R"HTML(
 
     /* ── STATUS BAR ── */
     .status {
-      display: flex; justify-content: space-between;
+      display: flex; justify-content: center; gap: 34px;
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -426,14 +447,21 @@ const char* htmlPage PROGMEM = R"HTML(
     <div class="conn-item"><div class="conn-dot" id="dotNano"></div>ESP32</div>
   </div>
 
-  <!-- Camera feed -->
-  <div class="cam-box">
-    <img id="camImg" src="" alt="camera-disabled">
-    <div class="cam-corner tl"></div>
-    <div class="cam-corner br"></div>
-    <div class="cam-badge">
-      <div class="dot" id="camDot"></div>
-      <span id="camTxt">DISABLED</span>
+  <!-- Line / traffic light status -->
+  <div class="line-panel">
+    <div class="line-head">
+      <span>LINE DETECT STATUS</span>
+      <span class="line-state" id="tlText">NONE</span>
+    </div>
+    <div class="lamp-row">
+      <div class="lamp-card">
+        <div class="lamp red" id="lampRed"></div>
+        <div class="lamp-label red">RED</div>
+      </div>
+      <div class="lamp-card">
+        <div class="lamp green" id="lampGreen"></div>
+        <div class="lamp-label green">GREEN</div>
+      </div>
     </div>
   </div>
 
@@ -445,18 +473,6 @@ const char* htmlPage PROGMEM = R"HTML(
 
   <!-- Status -->
   <div class="status">
-    <div class="st">
-      <span class="st-l">FRONT</span>
-      <span class="st-v" id="svF">--- cm</span>
-    </div>
-    <div class="st">
-      <span class="st-l">LEFT</span>
-      <span class="st-v" id="svL">--- cm</span>
-    </div>
-    <div class="st">
-      <span class="st-l">RIGHT</span>
-      <span class="st-v" id="svR">--- cm</span>
-    </div>
     <div class="st">
       <span class="st-l">MODE</span>
       <span class="st-v ok" id="svMode">MANUAL</span>
@@ -548,10 +564,6 @@ function initCtrlWS() {
   wsCtrl.onmessage = e => {
     try {
       var d = JSON.parse(e.data);
-      // Cập nhật khoảng cách
-      if (d.dF !== undefined) setDist('svF', d.dF);
-      if (d.dL !== undefined) setDist('svL', d.dL);
-      if (d.dR !== undefined) setDist('svR', d.dR);
       // IR sensor
       if (d.iL !== undefined) setIR('irL', d.iL);
       if (d.iR !== undefined) setIR('irR', d.iR);
@@ -560,6 +572,7 @@ function initCtrlWS() {
         d.nano ? dotOn('dotNano') : dotOff('dotNano');
       }
       if (d.ai !== undefined) setAI(d.ai);
+      if (d.tl !== undefined) setTrafficLight(d.tl);
     } catch(e) {}
   };
 }
@@ -584,16 +597,20 @@ function setMode(m) {
   if (!isAuto) send('MoveCar', '0');
 }
 
-// ── UI helpers ────────────────────────────────────────────
-function setDist(id, v) {
-  var el = document.getElementById(id);
-  el.textContent = (v >= 999 ? '---' : v) + ' cm';
-  el.className = 'st-v ' + (v < 10 ? 'danger' : v < 20 ? 'warn' : 'ok');
-}
-
 function setIR(id, val) {
   var el = document.getElementById(id);
   el.className = 'ir-led' + (val ? ' black' : '');
+}
+
+function setTrafficLight(state) {
+  var red = document.getElementById('lampRed');
+  var green = document.getElementById('lampGreen');
+  var text = document.getElementById('tlText');
+  red.classList.toggle('on', state === 'RED');
+  green.classList.toggle('on', state === 'GREEN');
+  text.textContent = state || 'NONE';
+  text.style.color = state === 'RED' ? 'var(--red)' :
+                     state === 'GREEN' ? 'var(--green)' : 'var(--accent)';
 }
 
 function setAI(code) {
@@ -658,10 +675,10 @@ void onControlWS(AsyncWebSocket*, AsyncWebSocketClient* client,
                  AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     // Gửi trạng thái hiện tại ngay khi kết nối
-    char buf[80];
+    char buf[128];
     snprintf(buf, sizeof(buf),
-      "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d}",
-      distF, distL, distR, irLeft, irRight, lastAICode);
+      "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d,\"tl\":\"%s\"}",
+      distF, distL, distR, irLeft, irRight, lastAICode, lastTrafficLight.c_str());
     client->text(buf);
     return;
   }
@@ -724,10 +741,10 @@ void readFromESP32() {
         irRight = nextVal();
 
         // Đẩy telemetry lên tất cả web client
-        char buf[80];
+        char buf[128];
         snprintf(buf, sizeof(buf),
-          "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d}",
-          distF, distL, distR, (int)irLeft, (int)irRight, lastAICode);
+          "{\"dF\":%d,\"dL\":%d,\"dR\":%d,\"iL\":%d,\"iR\":%d,\"nano\":1,\"ai\":%d,\"tl\":\"%s\"}",
+          distF, distL, distR, (int)irLeft, (int)irRight, lastAICode, lastTrafficLight.c_str());
         wsControl.textAll(buf);
       }
       esp32Buffer = "";
